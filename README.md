@@ -3,9 +3,16 @@
 [![crates.io](https://img.shields.io/crates/v/command-timeout.svg)](https://crates.io/crates/command-timeout) <!-- Replace with actual badge once published -->
 [![docs.rs](https://docs.rs/command-timeout/badge.svg)](https://docs.rs/command-timeout) <!-- Replace with actual badge once published -->
 <!-- Add build status badge if using CI -->
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A Rust library providing an async (Tokio) function to run external commands with advanced timeout capabilities, specifically designed for Linux.
+A Rust library providing an async (Tokio) function to run external commands with advanced timeout capabilities. "Advanced" means that the timeout can be extended if the external
+command is making progress. Progress is defined as "is writing to stdout or stderr". 
+
+## Caveats
+
+- Started as a weekend project with lots of vibe coding (sorry! I wanted to compare with my artisan code).
+- Used for community bonding in Google Summer of Code 2025 for CCExtractor. Pull request friendly.
+- Tests seem sane (to me) and they pass consistently. The example to git clone the linux kernel with a short time out that extends with activity works fine.
 
 ## Overview
 
@@ -29,7 +36,7 @@ The primary goal is to allow commands to run as long as they are actively making
 
 ## Platform Limitations
 
-*   **Linux Only:** This crate relies on Linux-specific features (`setpgid`, `killpg` with SIGKILL) for process group management and termination. It will not compile or work correctly on other platforms like Windows or macOS.
+*   **Linux Only:** This crate relies on Linux-specific features (`setpgid`, `killpg` with SIGKILL) for process group management and termination. It will not compile or work correctly on other platforms like Windows or macOS. This is intentional.
 
 ## Installation
 
