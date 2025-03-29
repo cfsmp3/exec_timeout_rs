@@ -4,6 +4,8 @@
 name = "command_timeout"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A tokio friendly command exec with smart timeout"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
