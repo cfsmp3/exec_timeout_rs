@@ -18,7 +18,8 @@ const KERNEL_REPO_URL: &str = "https://git.kernel.org/pub/scm/linux/kernel/git/t
 // RUST_LOG=debug cargo run --example git_clone_kernel
 
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> { // Using anyhow for simple example error handling
+async fn main() -> Result<(), anyhow::Error> {
+    // Using anyhow for simple example error handling
     // Initialize tracing subscriber
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO) // Default to INFO level
@@ -33,11 +34,11 @@ async fn main() -> Result<(), anyhow::Error> { // Using anyhow for simple exampl
     let min_timeout = Duration::from_secs(10);
     let max_timeout = Duration::from_secs(60 * 60 * 24 * 7); // 1 week (effectively infinite)
     let activity_timeout = Duration::from_secs(60 * 5); // 5 minutes
-    // -----------------------------
+                                                        // -----------------------------
 
     // Create a temporary directory builder
     let temp_dir_builder = Builder::new().prefix("kernel_clone_persistent").tempdir()?; // Use a different prefix
-    // --- CHANGE: Keep the path instead of the TempDir object ---
+                                                                                        // --- CHANGE: Keep the path instead of the TempDir object ---
     let clone_target_path_buf: PathBuf = temp_dir_builder.into_path();
     // --- END CHANGE ---
     let clone_target_path_str = clone_target_path_buf.to_str().unwrap_or("."); // Use "." as fallback if path invalid unicode
@@ -57,12 +58,13 @@ async fn main() -> Result<(), anyhow::Error> { // Using anyhow for simple exampl
     // Prepare the git clone command
     let mut cmd = Command::new("git");
     cmd.arg("clone")
-       .arg("--progress") // Explicitly ask for progress output on stderr
-       .arg(KERNEL_REPO_URL)
-       .arg(clone_target_path_str); // Clone into the persistent temp dir path
+        .arg("--progress") // Explicitly ask for progress output on stderr
+        .arg(KERNEL_REPO_URL)
+        .arg(clone_target_path_str); // Clone into the persistent temp dir path
 
     // Run the command using the library function
-    let command_result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout).await;
+    let command_result =
+        run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout).await;
 
     match command_result {
         Ok(output) => {
@@ -75,7 +77,8 @@ async fn main() -> Result<(), anyhow::Error> { // Using anyhow for simple exampl
         }
         Err(e) => {
             // Log specific details first
-            match &e { // Borrow e here to allow using it later
+            match &e {
+                // Borrow e here to allow using it later
                 CommandError::Spawn(io_err) => error!("Failed to spawn git: {}", io_err),
                 CommandError::Io(io_err) => error!("IO error reading output: {}", io_err),
                 CommandError::Kill(io_err) => error!("Error sending kill signal: {}", io_err),
@@ -130,21 +133,27 @@ fn handle_command_output(output: CommandOutput) {
     info!("Stdout Length: {} bytes", output.stdout.len());
     if !output.stdout.is_empty() {
         // Print snippet or full output (be cautious with large output)
-        info!("Stdout (first 1KB):\n---\n{}...\n---", String::from_utf8_lossy(&output.stdout.iter().take(1024).cloned().collect::<Vec<_>>()));
+        info!(
+            "Stdout (first 1KB):\n---\n{}...\n---",
+            String::from_utf8_lossy(&output.stdout.iter().take(1024).cloned().collect::<Vec<_>>())
+        );
     }
 
     info!("Stderr Length: {} bytes", output.stderr.len());
     if !output.stderr.is_empty() {
         // Git clone progress usually goes to stderr
-        warn!("Stderr (first 1KB):\n---\n{}...\n---", String::from_utf8_lossy(&output.stderr.iter().take(1024).cloned().collect::<Vec<_>>()));
+        warn!(
+            "Stderr (first 1KB):\n---\n{}...\n---",
+            String::from_utf8_lossy(&output.stderr.iter().take(1024).cloned().collect::<Vec<_>>())
+        );
         // For full stderr: warn!("Stderr:\n{}", String::from_utf8_lossy(&output.stderr));
     }
 
     if output.exit_status.map_or(false, |s| s.success()) && !output.timed_out {
-         info!("---> Clone completed successfully! <---");
+        info!("---> Clone completed successfully! <---");
     } else if output.timed_out {
-         error!("---> Clone FAILED due to timeout. <---");
+        error!("---> Clone FAILED due to timeout. <---");
     } else {
-         error!("---> Clone FAILED with non-zero exit status. <---");
+        error!("---> Clone FAILED with non-zero exit status. <---");
     }
 }

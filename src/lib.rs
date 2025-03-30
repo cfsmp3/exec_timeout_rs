@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::time::sleep_until;
-use tracing::{debug, warn, instrument};
+use tracing::{debug, instrument, warn};
 // --- Add nix imports ---
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
@@ -73,7 +73,6 @@ struct CommandExecutionState<R1: AsyncRead + Unpin, R2: AsyncRead + Unpin> {
     exit_status: Option<ExitStatus>,
 }
 
-
 // --- Helper Functions (Definitions Before Use) ---
 
 /// Validates the timeout durations.
@@ -85,8 +84,8 @@ fn validate_timeouts(min: Duration, max: Duration, activity: Duration) -> Result
         )));
     }
     if activity == Duration::ZERO {
-         return Err(CommandError::InvalidTimeout(
-            "activity_timeout must be positive".to_string()
+        return Err(CommandError::InvalidTimeout(
+            "activity_timeout must be positive".to_string(),
         ));
     }
     Ok(())
@@ -131,10 +130,7 @@ fn spawn_command_and_setup_state(
 }
 
 /// Calculates the next deadline based on activity, capped by the absolute deadline.
-fn calculate_new_deadline(
-    absolute_deadline: Instant,
-    activity_timeout: Duration,
-) -> Instant {
+fn calculate_new_deadline(absolute_deadline: Instant, activity_timeout: Duration) -> Instant {
     let potential_new_deadline = Instant::now() + activity_timeout;
     let new_deadline = std::cmp::min(potential_new_deadline, absolute_deadline);
     debug!(
@@ -147,26 +143,26 @@ fn calculate_new_deadline(
 }
 
 /// Updates the current deadline based on detected activity.
-#[instrument(level="debug", skip(current_deadline, timeouts))]
+#[instrument(level = "debug", skip(current_deadline, timeouts))]
 fn handle_stream_activity(
     bytes_read: usize,
     stream_name: &str,
     current_deadline: &mut Instant,
     timeouts: &TimeoutConfig,
 ) {
-    debug!(bytes = bytes_read, stream = stream_name, "Activity detected");
-    let new_deadline = calculate_new_deadline(
-        timeouts.absolute_deadline,
-        timeouts.activity,
+    debug!(
+        bytes = bytes_read,
+        stream = stream_name,
+        "Activity detected"
     );
+    let new_deadline = calculate_new_deadline(timeouts.absolute_deadline, timeouts.activity);
     if new_deadline != *current_deadline {
         debug!(old = ?*current_deadline, new = ?new_deadline, "Updating deadline");
         *current_deadline = new_deadline;
     } else {
-         debug!(deadline = ?*current_deadline, "Deadline remains unchanged (likely at absolute limit)");
+        debug!(deadline = ?*current_deadline, "Deadline remains unchanged (likely at absolute limit)");
     }
 }
-
 
 /// Reads a chunk from the stream using read_buf.
 async fn read_stream_chunk<R: AsyncRead + Unpin>(
@@ -176,7 +172,7 @@ async fn read_stream_chunk<R: AsyncRead + Unpin>(
     // read_buf appends to the vector's initialized part.
     // Caller MUST clear the buffer afterwards if reusing it.
     match reader.read_buf(buf).await {
-        Ok(0) => Ok(None), // EOF
+        Ok(0) => Ok(None),    // EOF
         Ok(n) => Ok(Some(n)), // Read n bytes
         Err(e) => Err(e),
     }
@@ -199,18 +195,27 @@ async fn drain_reader<R: AsyncRead + Unpin>(
                         debug!("Drained {} bytes from {}", n, stream_name);
                         buffer.extend_from_slice(&read_buf[..n]);
                     } else {
-                         debug!("Drained 0 bytes from {}, treating as EOF.", stream_name);
-                         break; // Should be caught by Ok(None) but handles defensively
+                        debug!("Drained 0 bytes from {}, treating as EOF.", stream_name);
+                        break; // Should be caught by Ok(None) but handles defensively
                     }
                 }
-                Ok(None) => { // EOF
+                Ok(None) => {
+                    // EOF
                     debug!("EOF reached while draining {}", stream_name);
                     break; // Finished draining
                 }
                 Err(e) => {
                     // Ignore expected errors after process exit, log others
-                    if matches!(e.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset) {
-                        debug!("{} closed while draining ({}): {}", stream_name, e.kind(), e);
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                    ) {
+                        debug!(
+                            "{} closed while draining ({}): {}",
+                            stream_name,
+                            e.kind(),
+                            e
+                        );
                     } else {
                         warn!("Error draining remaining {} output: {}", stream_name, e);
                         // Don't return error, just stop draining and report what was gathered
@@ -219,17 +224,16 @@ async fn drain_reader<R: AsyncRead + Unpin>(
                 }
             }
         }
-         // Mark as drained by removing the reader
+        // Mark as drained by removing the reader
         *reader_opt = None;
         debug!("Finished draining {}", stream_name);
     }
     Ok(())
 }
 
-
 /// Handles the timeout event: logs, attempts to kill process group, checks for immediate exit.
 /// Returns Ok(Some(status)) if process exited before kill, Ok(None) if kill attempted/succeeded, Err on failure.
-#[instrument(level="debug", skip(child, timeouts))]
+#[instrument(level = "debug", skip(child, timeouts))]
 async fn handle_timeout_event(
     child: &mut Child,
     triggered_deadline: Instant,
@@ -264,29 +268,33 @@ async fn handle_timeout_event(
         // and signals the entire group associated with that process.
         match killpg(pid, Signal::SIGKILL) {
             Ok(()) => {
-                debug!(pid = pid_u32, pgid = pid.as_raw(), "Process group kill signal (SIGKILL) sent successfully.");
+                debug!(
+                    pid = pid_u32,
+                    pgid = pid.as_raw(),
+                    "Process group kill signal (SIGKILL) sent successfully."
+                );
                 // Signal sent, the final wait() in finalize_exit_status will reap the original child.
                 Ok(None)
             }
             Err(e) => {
-                 // ESRCH means the process group doesn't exist (likely all processes exited quickly)
+                // ESRCH means the process group doesn't exist (likely all processes exited quickly)
                 if e == nix::errno::Errno::ESRCH {
                     warn!(pid = pid_u32, error = %e, "Failed to kill process group (ESRCH - likely already exited). Checking child status.");
                     // Check if the *original* child process exited
                     match child.try_wait() {
-                         Ok(Some(status)) => {
-                             debug!(pid = pid_u32, status = %status, "Original child had already exited before kill signal processed");
-                             return Ok(Some(status)); // Treat as natural exit
-                         }
-                         Ok(None) => {
-                              debug!(pid = pid_u32, "Original child still running or uncollected after killpg failed (ESRCH).");
-                              // Proceed as if timeout kill was attempted.
-                              return Ok(None);
-                         }
-                         Err(wait_err) => {
-                             warn!(pid = pid_u32, error = %wait_err, "Error checking child status after failed killpg (ESRCH)");
-                             return Err(CommandError::Wait(wait_err));
-                         }
+                        Ok(Some(status)) => {
+                            debug!(pid = pid_u32, status = %status, "Original child had already exited before kill signal processed");
+                            return Ok(Some(status)); // Treat as natural exit
+                        }
+                        Ok(None) => {
+                            debug!(pid = pid_u32, "Original child still running or uncollected after killpg failed (ESRCH).");
+                            // Proceed as if timeout kill was attempted.
+                            return Ok(None);
+                        }
+                        Err(wait_err) => {
+                            warn!(pid = pid_u32, error = %wait_err, "Error checking child status after failed killpg (ESRCH)");
+                            return Err(CommandError::Wait(wait_err));
+                        }
                     }
                 } else {
                     // Another error occurred during killpg (e.g., permissions EPERM)
@@ -294,26 +302,26 @@ async fn handle_timeout_event(
                     // Map nix::Error to std::io::Error for CommandError::Kill
                     return Err(CommandError::Kill(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                         format!("Failed to kill process group for PID {}: {}", pid_u32, e)
+                        format!("Failed to kill process group for PID {}: {}", pid_u32, e),
                     )));
                 }
             }
         }
     } else {
         // This case should be extremely unlikely if spawn succeeded.
-        warn!("Could not get PID to kill process for timeout. Process might have exited abnormally.");
+        warn!(
+            "Could not get PID to kill process for timeout. Process might have exited abnormally."
+        );
         // Cannot attempt kill, treat as timed out, let finalize_exit_status handle wait().
         Ok(None)
     }
 }
-
 
 /// The main `select!` loop monitoring the process, streams, and timeouts.
 async fn run_command_loop(
     state: &mut CommandExecutionState<impl AsyncRead + Unpin, impl AsyncRead + Unpin>,
     timeouts: &TimeoutConfig,
 ) -> Result<(), CommandError> {
-
     loop {
         let deadline_sleep = sleep_until(state.current_deadline.into());
         tokio::pin!(deadline_sleep);
@@ -323,7 +331,6 @@ async fn run_command_loop(
         let can_read_stderr = state.stderr_reader.is_some() && state.exit_status.is_none();
         let can_check_exit = state.exit_status.is_none();
         let can_check_timeout = state.exit_status.is_none();
-
 
         tokio::select! {
             biased; // Prioritize checking exit status
@@ -433,7 +440,10 @@ async fn finalize_exit_status(
     timed_out: bool,
 ) -> Result<Option<ExitStatus>, CommandError> {
     if timed_out && current_status.is_none() {
-        debug!(pid = child.id(), "Waiting for process to exit after kill signal...");
+        debug!(
+            pid = child.id(),
+            "Waiting for process to exit after kill signal..."
+        );
         match child.wait().await {
             Ok(status) => {
                 debug!(pid = child.id(), status = %status, "Process exited after kill");
@@ -448,7 +458,6 @@ async fn finalize_exit_status(
         Ok(current_status) // Already have status, or didn't time out
     }
 }
-
 
 // --- Public API Function ---
 
@@ -468,7 +477,7 @@ pub async fn run_command_with_timeout(
     let absolute_deadline = start_time + maximum_timeout;
     let initial_deadline = std::cmp::min(
         absolute_deadline,
-        start_time + std::cmp::max(minimum_timeout, activity_timeout)
+        start_time + std::cmp::max(minimum_timeout, activity_timeout),
     );
 
     let timeout_config = TimeoutConfig {
@@ -488,16 +497,15 @@ pub async fn run_command_with_timeout(
             // libc::setpgid(0, 0) makes the new process its own group leader.
             // Pass 0 for both pid and pgid to achieve this for the calling process.
             if libc::setpgid(0, 0) == 0 {
-                 Ok(())
+                Ok(())
             } else {
-                 // Capture the error from the OS if setpgid fails
-                 Err(std::io::Error::last_os_error())
+                // Capture the error from the OS if setpgid fails
+                Err(std::io::Error::last_os_error())
             }
         });
     }
     // Put the modified command back for spawning
     command = std_cmd;
-
 
     // Setup state (spawns command with pre_exec hook)
     let mut state = spawn_command_and_setup_state(&mut command, initial_deadline)?;
@@ -511,21 +519,24 @@ pub async fn run_command_with_timeout(
         &mut state.stdout_reader,
         &mut state.stdout_buffer,
         &mut state.stdout_read_buffer,
-        "stdout"
-    ).await?;
+        "stdout",
+    )
+    .await?;
     drain_reader(
         &mut state.stderr_reader,
         &mut state.stderr_buffer,
         &mut state.stderr_read_buffer,
-        "stderr"
-    ).await?;
+        "stderr",
+    )
+    .await?;
 
     // Post-loop processing: Final wait if killed and status not yet obtained
     let final_exit_status = finalize_exit_status(
         &mut state.child,
         state.exit_status, // Use status potentially set in loop
         state.timed_out,
-    ).await?;
+    )
+    .await?;
 
     let end_time = Instant::now();
     let duration = end_time.duration_since(start_time);
@@ -548,21 +559,24 @@ pub async fn run_command_with_timeout(
     })
 }
 
-
 // ----------- Tests -----------
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libc;
     use std::os::unix::process::ExitStatusExt; // For signal checking
     use tokio::runtime::Runtime;
-    use tracing_subscriber::{fmt, EnvFilter};
-    use libc; // Make sure libc is in scope for SIGKILL constant
+    use tracing_subscriber::{fmt, EnvFilter}; // Make sure libc is in scope for SIGKILL constant
 
     // Helper to initialize tracing for tests
     fn setup_tracing() {
         // Use `RUST_LOG=debug` env var to see logs, default info
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        fmt().with_env_filter(filter).with_test_writer().try_init().ok(); // ok() ignores errors if already initialized
+        fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .try_init()
+            .ok(); // ok() ignores errors if already initialized
     }
 
     // Helper to run async tests
@@ -580,7 +594,8 @@ mod tests {
     fn test_command_runs_successfully_within_timeouts() {
         run_async_test(|| async {
             let mut cmd = StdCommand::new("sh");
-            cmd.arg("-c").arg("echo 'Hello'; sleep 0.1; echo 'World' >&2");
+            cmd.arg("-c")
+                .arg("echo 'Hello'; sleep 0.1; echo 'World' >&2");
 
             let min_timeout = Duration::from_millis(50);
             let max_timeout = Duration::from_secs(2);
@@ -593,10 +608,20 @@ mod tests {
             assert_eq!(result.stdout, b"Hello\n");
             assert_eq!(result.stderr, b"World\n");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(0), "Exit code should be 0");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(0),
+                "Exit code should be 0"
+            );
             assert!(!result.timed_out, "Should not have timed out");
-            assert!(result.duration >= Duration::from_millis(100), "Duration should be >= 100ms");
-            assert!(result.duration < max_timeout, "Duration should be < max_timeout");
+            assert!(
+                result.duration >= Duration::from_millis(100),
+                "Duration should be >= 100ms"
+            );
+            assert!(
+                result.duration < max_timeout,
+                "Duration should be < max_timeout"
+            );
         });
     }
 
@@ -620,13 +645,22 @@ mod tests {
             assert_eq!(result.stdout, b"Immediate exit\n");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(0), "Exit code should be 0");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(0),
+                "Exit code should be 0"
+            );
             assert!(!result.timed_out, "Should not have timed out");
-            assert!(duration < Duration::from_millis(500), "Test duration should be short");
-            assert!(result.duration < Duration::from_millis(500), "Reported duration should be short");
+            assert!(
+                duration < Duration::from_millis(500),
+                "Test duration should be short"
+            );
+            assert!(
+                result.duration < Duration::from_millis(500),
+                "Reported duration should be short"
+            );
         });
     }
-
 
     #[test]
     fn test_maximum_timeout_kills_long_running_command() {
@@ -644,21 +678,35 @@ mod tests {
 
             assert!(result.stdout.is_empty(), "Stdout should be empty");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
-            assert!(result.exit_status.is_some(), "Exit status should be Some after kill");
+            assert!(
+                result.exit_status.is_some(),
+                "Exit status should be Some after kill"
+            );
             // SIGKILL is signal 9
-            assert_eq!(result.exit_status.unwrap().signal(), Some(libc::SIGKILL as i32), "Should be killed by SIGKILL");
+            assert_eq!(
+                result.exit_status.unwrap().signal(),
+                Some(libc::SIGKILL as i32),
+                "Should be killed by SIGKILL"
+            );
             assert!(result.timed_out, "Should have timed out");
-            assert!(result.duration >= max_timeout, "Duration should be >= max_timeout");
+            assert!(
+                result.duration >= max_timeout,
+                "Duration should be >= max_timeout"
+            );
             // Allow slightly more buffer for process group kill and reaping
-            assert!(result.duration < max_timeout + Duration::from_millis(750), "Duration allow buffer");
+            assert!(
+                result.duration < max_timeout + Duration::from_millis(750),
+                "Duration allow buffer"
+            );
         });
     }
 
     #[test]
     fn test_activity_timeout_kills_idle_command_after_min_timeout() {
-         run_async_test(|| async {
+        run_async_test(|| async {
             let mut cmd = StdCommand::new("sh");
-            cmd.arg("-c").arg("echo 'Initial output'; sleep 5; echo 'This should not appear'");
+            cmd.arg("-c")
+                .arg("echo 'Initial output'; sleep 5; echo 'This should not appear'");
 
             let min_timeout = Duration::from_millis(200);
             let max_timeout = Duration::from_secs(10);
@@ -670,31 +718,57 @@ mod tests {
 
             assert_eq!(result.stdout, b"Initial output\n");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
-            assert!(result.exit_status.is_some(), "Exit status should be Some after kill");
+            assert!(
+                result.exit_status.is_some(),
+                "Exit status should be Some after kill"
+            );
             // SIGKILL is signal 9
-            assert_eq!(result.exit_status.unwrap().signal(), Some(libc::SIGKILL as i32), "Should be killed by SIGKILL");
+            assert_eq!(
+                result.exit_status.unwrap().signal(),
+                Some(libc::SIGKILL as i32),
+                "Should be killed by SIGKILL"
+            );
             assert!(result.timed_out, "Should have timed out");
 
             // Duration Assertions (Process group kill should be faster now)
             // 1. Should run for at least the minimum guaranteed time
-            assert!(result.duration >= min_timeout, "Duration ({:?}) should be >= min_timeout ({:?})", result.duration, min_timeout);
+            assert!(
+                result.duration >= min_timeout,
+                "Duration ({:?}) should be >= min_timeout ({:?})",
+                result.duration,
+                min_timeout
+            );
 
             // 2. Should run for approximately the activity timeout after the initial echo.
             let lower_bound = activity_timeout; // Kill signal sent *at* activity timeout
             let upper_bound = activity_timeout + Duration::from_millis(750); // Allow generous buffer for reaping
-            assert!(result.duration >= lower_bound, "Duration ({:?}) should be >= activity_timeout ({:?})", result.duration, lower_bound);
-            assert!(result.duration < upper_bound, "Duration ({:?}) should be < activity_timeout plus buffer ({:?})", result.duration, upper_bound);
+            assert!(
+                result.duration >= lower_bound,
+                "Duration ({:?}) should be >= activity_timeout ({:?})",
+                result.duration,
+                lower_bound
+            );
+            assert!(
+                result.duration < upper_bound,
+                "Duration ({:?}) should be < activity_timeout plus buffer ({:?})",
+                result.duration,
+                upper_bound
+            );
 
             // 3. Must be killed before the internal sleep finishes
-            assert!(result.duration < Duration::from_secs(5), "Should be killed before sleep 5 ends");
-         });
+            assert!(
+                result.duration < Duration::from_secs(5),
+                "Should be killed before sleep 5 ends"
+            );
+        });
     }
 
-     #[test]
+    #[test]
     fn test_activity_resets_timeout_allowing_completion() {
-         run_async_test(|| async {
+        run_async_test(|| async {
             let mut cmd = StdCommand::new("sh");
-            cmd.arg("-c").arg("echo '1'; sleep 0.5; echo '2' >&2; sleep 0.5; echo '3'; sleep 0.5; echo '4'");
+            cmd.arg("-c")
+                .arg("echo '1'; sleep 0.5; echo '2' >&2; sleep 0.5; echo '3'; sleep 0.5; echo '4'");
 
             let min_timeout = Duration::from_millis(100);
             let max_timeout = Duration::from_secs(5);
@@ -707,11 +781,21 @@ mod tests {
             assert_eq!(result.stdout, b"1\n3\n4\n");
             assert_eq!(result.stderr, b"2\n");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(0), "Exit code should be 0");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(0),
+                "Exit code should be 0"
+            );
             assert!(!result.timed_out, "Should not have timed out");
-            assert!(result.duration > Duration::from_secs(1), "Duration should be > 1s (actual ~1.5s)");
-            assert!(result.duration < max_timeout, "Duration should be < max_timeout");
-         });
+            assert!(
+                result.duration > Duration::from_secs(1),
+                "Duration should be > 1s (actual ~1.5s)"
+            );
+            assert!(
+                result.duration < max_timeout,
+                "Duration should be < max_timeout"
+            );
+        });
     }
 
     #[test]
@@ -731,74 +815,82 @@ mod tests {
             assert_eq!(result.stdout.len(), 50, "Stdout length should be 50");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(0), "Exit code should be 0");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(0),
+                "Exit code should be 0"
+            );
             assert!(!result.timed_out, "Should not have timed out");
         });
     }
 
-     #[test]
-     fn test_command_not_found() {
-         run_async_test(|| async {
-             let cmd = StdCommand::new("a_command_that_does_not_exist_hopefully"); // removed mut
+    #[test]
+    fn test_command_not_found() {
+        run_async_test(|| async {
+            let cmd = StdCommand::new("a_command_that_does_not_exist_hopefully"); // removed mut
 
-             let min_timeout = Duration::from_millis(50);
-             let max_timeout = Duration::from_secs(2);
-             let activity_timeout = Duration::from_secs(1);
+            let min_timeout = Duration::from_millis(50);
+            let max_timeout = Duration::from_secs(2);
+            let activity_timeout = Duration::from_secs(1);
 
-             let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
-                 .await;
+            let result =
+                run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout).await;
 
-             assert!(result.is_err(), "Should return error");
-             match result.err().unwrap() {
-                 CommandError::Spawn(e) => {
-                     assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "Error kind should be NotFound");
-                 }
-                 e => panic!("Expected CommandError::Spawn, got {:?}", e),
-             }
-         });
-     }
+            assert!(result.is_err(), "Should return error");
+            match result.err().unwrap() {
+                CommandError::Spawn(e) => {
+                    assert_eq!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound,
+                        "Error kind should be NotFound"
+                    );
+                }
+                e => panic!("Expected CommandError::Spawn, got {:?}", e),
+            }
+        });
+    }
 
-     #[test]
-     fn test_min_timeout_greater_than_max_timeout() {
-          run_async_test(|| async {
-             let cmd = StdCommand::new("echo"); // removed mut
-             // cmd.arg("test"); // Don't need args
+    #[test]
+    fn test_min_timeout_greater_than_max_timeout() {
+        run_async_test(|| async {
+            let cmd = StdCommand::new("echo"); // removed mut
+                                               // cmd.arg("test"); // Don't need args
 
-             let min_timeout = Duration::from_secs(2);
-             let max_timeout = Duration::from_secs(1); // Invalid config
-             let activity_timeout = Duration::from_secs(1);
+            let min_timeout = Duration::from_secs(2);
+            let max_timeout = Duration::from_secs(1); // Invalid config
+            let activity_timeout = Duration::from_secs(1);
 
-             let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
-                 .await;
+            let result =
+                run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout).await;
 
-             assert!(result.is_err(), "Should return error");
-             match result.err().unwrap() {
-                 CommandError::InvalidTimeout(_) => {} // Expected error
-                 e => panic!("Expected CommandError::InvalidTimeout, got {:?}", e),
-             }
-         });
-     }
+            assert!(result.is_err(), "Should return error");
+            match result.err().unwrap() {
+                CommandError::InvalidTimeout(_) => {} // Expected error
+                e => panic!("Expected CommandError::InvalidTimeout, got {:?}", e),
+            }
+        });
+    }
 
-      #[test]
-     fn test_zero_activity_timeout() {
-          run_async_test(|| async {
-             let cmd = StdCommand::new("echo"); // removed mut
-             // cmd.arg("test"); // Don't need args
+    #[test]
+    fn test_zero_activity_timeout() {
+        run_async_test(|| async {
+            let cmd = StdCommand::new("echo"); // removed mut
+                                               // cmd.arg("test"); // Don't need args
 
-             let min_timeout = Duration::from_millis(100);
-             let max_timeout = Duration::from_secs(1);
-             let activity_timeout = Duration::ZERO; // Invalid config
+            let min_timeout = Duration::from_millis(100);
+            let max_timeout = Duration::from_secs(1);
+            let activity_timeout = Duration::ZERO; // Invalid config
 
-             let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
-                 .await;
+            let result =
+                run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout).await;
 
-             assert!(result.is_err(), "Should return error");
-             match result.err().unwrap() {
-                 CommandError::InvalidTimeout(_) => {} // Expected error
-                 e => panic!("Expected CommandError::InvalidTimeout, got {:?}", e),
-             }
-         });
-     }
+            assert!(result.is_err(), "Should return error");
+            match result.err().unwrap() {
+                CommandError::InvalidTimeout(_) => {} // Expected error
+                e => panic!("Expected CommandError::InvalidTimeout, got {:?}", e),
+            }
+        });
+    }
 
     #[test]
     fn test_process_exits_with_error_code() {
@@ -817,17 +909,22 @@ mod tests {
             assert!(result.stdout.is_empty(), "Stdout should be empty");
             assert_eq!(result.stderr, b"Error message\n");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(55), "Exit code should be 55");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(55),
+                "Exit code should be 55"
+            );
             assert!(!result.timed_out, "Should not have timed out");
         });
     }
 
-     #[test]
+    #[test]
     fn test_continuous_output_does_not_timeout() {
         run_async_test(|| async {
             let mut cmd = StdCommand::new("sh");
             // Continuously output numbers for ~2 seconds, sleeping shortly
-            cmd.arg("-c").arg("i=0; while [ $i -lt 20 ]; do echo $i; i=$((i+1)); sleep 0.1; done");
+            cmd.arg("-c")
+                .arg("i=0; while [ $i -lt 20 ]; do echo $i; i=$((i+1)); sleep 0.1; done");
 
             let min_timeout = Duration::from_millis(50);
             let max_timeout = Duration::from_secs(10);
@@ -840,14 +937,24 @@ mod tests {
             assert!(!result.stdout.is_empty(), "Stdout should not be empty");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
             assert!(result.exit_status.is_some(), "Exit status should be Some");
-            assert_eq!(result.exit_status.unwrap().code(), Some(0), "Exit code should be 0");
+            assert_eq!(
+                result.exit_status.unwrap().code(),
+                Some(0),
+                "Exit code should be 0"
+            );
             assert!(!result.timed_out, "Should not have timed out");
-            assert!(result.duration > Duration::from_secs(2), "Duration should be > 2s"); // 20 * 0.1s
-            assert!(result.duration < Duration::from_secs(3), "Duration should be < 3s");
+            assert!(
+                result.duration > Duration::from_secs(2),
+                "Duration should be > 2s"
+            ); // 20 * 0.1s
+            assert!(
+                result.duration < Duration::from_secs(3),
+                "Duration should be < 3s"
+            );
         });
     }
 
-     #[test]
+    #[test]
     fn test_timeout_immediately_if_min_timeout_is_zero_and_no_activity() {
         run_async_test(|| async {
             let mut cmd = StdCommand::new("sleep");
@@ -863,15 +970,27 @@ mod tests {
 
             assert!(result.stdout.is_empty(), "Stdout should be empty");
             assert!(result.stderr.is_empty(), "Stderr should be empty");
-            assert!(result.exit_status.is_some(), "Exit status should be Some after kill");
+            assert!(
+                result.exit_status.is_some(),
+                "Exit status should be Some after kill"
+            );
             // SIGKILL is signal 9
-            assert_eq!(result.exit_status.unwrap().signal(), Some(libc::SIGKILL as i32), "Should be killed by SIGKILL");
+            assert_eq!(
+                result.exit_status.unwrap().signal(),
+                Some(libc::SIGKILL as i32),
+                "Should be killed by SIGKILL"
+            );
             assert!(result.timed_out, "Should have timed out");
             // Should be killed after activity_timeout (since min is 0)
-            assert!(result.duration >= activity_timeout, "Duration should be >= activity_timeout");
-             // Allow slightly more buffer for process group kill and reaping
-            assert!(result.duration < activity_timeout + Duration::from_millis(750), "Duration allow buffer");
+            assert!(
+                result.duration >= activity_timeout,
+                "Duration should be >= activity_timeout"
+            );
+            // Allow slightly more buffer for process group kill and reaping
+            assert!(
+                result.duration < activity_timeout + Duration::from_millis(750),
+                "Duration allow buffer"
+            );
         });
     }
-
 } // end tests mod
