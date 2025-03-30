@@ -94,14 +94,12 @@ fn validate_timeouts(min: Duration, max: Duration, activity: Duration) -> Result
 /// Spawns the command, sets up pipes, and initializes the execution state.
 /// Note: The command passed in should already have pre_exec configured if needed.
 fn spawn_command_and_setup_state(
-    command: &mut StdCommand,
+    command: StdCommand, // Own command to avoid borrowing issues
     initial_deadline: Instant,
 ) -> Result<CommandExecutionState<impl AsyncRead + Unpin, impl AsyncRead + Unpin>, CommandError> {
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
 
-    // Command already has pre_exec set by the caller function
-    let mut tokio_cmd = TokioCommand::from(std::mem::replace(command, StdCommand::new("")));
+    // pass ownership of command
+    let mut tokio_cmd = TokioCommand::from(command);
 
     let mut child = tokio_cmd
         .kill_on_drop(true)
@@ -489,11 +487,8 @@ pub async fn run_command_with_timeout(
     };
 
     // Configure the command to run in its own process group
-    // This MUST be done before spawning the command.
-    // Take ownership to modify, then pass the modified command to spawn_command_and_setup_state
-    let mut std_cmd = std::mem::replace(&mut command, StdCommand::new("")); // Take ownership temporarily
     unsafe {
-        std_cmd.pre_exec(|| {
+        command.pre_exec(|| {
             // libc::setpgid(0, 0) makes the new process its own group leader.
             // Pass 0 for both pid and pgid to achieve this for the calling process.
             if libc::setpgid(0, 0) == 0 {
@@ -504,11 +499,11 @@ pub async fn run_command_with_timeout(
             }
         });
     }
-    // Put the modified command back for spawning
-    command = std_cmd;
+    
+    
 
     // Setup state (spawns command with pre_exec hook)
-    let mut state = spawn_command_and_setup_state(&mut command, initial_deadline)?;
+    let mut state = spawn_command_and_setup_state(command, initial_deadline)?;
 
     // Main execution loop
     run_command_loop(&mut state, &timeout_config).await?;
