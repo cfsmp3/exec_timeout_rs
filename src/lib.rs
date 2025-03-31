@@ -156,11 +156,12 @@ fn handle_stream_activity(
         "Activity detected"
     );
     let new_deadline = calculate_new_deadline(timeouts.absolute_deadline, timeouts.activity);
-    if new_deadline != *current_deadline {
+    
+    if *current_deadline < timeouts.absolute_deadline && new_deadline != *current_deadline {
         debug!(old = ?*current_deadline, new = ?new_deadline, "Updating deadline");
         *current_deadline = new_deadline;
     } else {
-        debug!(deadline = ?*current_deadline, "Deadline remains unchanged (likely at absolute limit)");
+        debug!(deadline = ?*current_deadline, "Deadline remains unchanged (likely at absolute limit or no change)");
     }
 }
 
