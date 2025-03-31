@@ -993,4 +993,135 @@ mod tests {
             );
         });
     }
+
+    //  ----- tests for calculate_new_deadline -----
+    #[test]
+fn test_calculate_new_deadline_absolute_deadline_passed() {
+    let absolute_deadline = Instant::now() - Duration::from_secs(1); // Already passed
+    let activity_timeout = Duration::from_secs(5);
+
+    let new_deadline = calculate_new_deadline(absolute_deadline, activity_timeout);
+
+    assert_eq!(
+        new_deadline, absolute_deadline,
+        "New deadline should be the absolute deadline when it has already passed"
+    );
+}
+
+#[test]
+fn test_calculate_new_deadline_activity_timeout_before_absolute_deadline() {
+    let absolute_deadline = Instant::now() + Duration::from_secs(10);
+    let activity_timeout = Duration::from_secs(5);
+
+    let new_deadline = calculate_new_deadline(absolute_deadline, activity_timeout);
+
+    assert!(
+        new_deadline <= absolute_deadline,
+        "New deadline should not exceed the absolute deadline"
+    );
+    assert!(
+        new_deadline > Instant::now(),
+        "New deadline should be in the future"
+    );
+}
+    // ----- tests for handle_stream_activity -----
+    #[test]
+fn test_handle_stream_activity_updates_deadline() {
+    let mut current_deadline = Instant::now() + Duration::from_secs(5);
+    let timeouts = TimeoutConfig {
+        minimum: Duration::from_secs(1),
+        maximum: Duration::from_secs(10),
+        activity: Duration::from_secs(3),
+        start_time: Instant::now(),
+        absolute_deadline: Instant::now() + Duration::from_secs(10),
+    };
+
+    handle_stream_activity(10, "stdout", &mut current_deadline, &timeouts);
+
+    assert!(
+        current_deadline > Instant::now(),
+        "Current deadline should be updated to a future time"
+    );
+    assert!(
+        current_deadline <= timeouts.absolute_deadline,
+        "Current deadline should not exceed the absolute deadline"
+    );
+}
+
+#[test]
+fn test_handle_stream_activity_no_update_at_absolute_limit() {
+    let absolute_deadline = Instant::now() + Duration::from_secs(5);
+    let mut current_deadline = absolute_deadline; // Already at the absolute limit
+    let timeouts = TimeoutConfig {
+        minimum: Duration::from_secs(1),
+        maximum: Duration::from_secs(10),
+        activity: Duration::from_secs(3),
+        start_time: Instant::now(),
+        absolute_deadline,
+    };
+
+    handle_stream_activity(10, "stderr", &mut current_deadline, &timeouts);
+
+    assert_eq!(
+        current_deadline, absolute_deadline,
+        "Current deadline should remain unchanged when at the absolute limit"
+    );
+}
+
+    // ----- tests for run_command_loop -----
+#[test]
+fn test_run_command_loop_exits_on_process_finish() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("echo");
+        cmd.arg("Test");
+
+        let timeouts = TimeoutConfig {
+            minimum: Duration::from_secs(1),
+            maximum: Duration::from_secs(5),
+            activity: Duration::from_secs(2),
+            start_time: Instant::now(),
+            absolute_deadline: Instant::now() + Duration::from_secs(5),
+        };
+
+        let mut state = spawn_command_and_setup_state(&mut cmd, timeouts.absolute_deadline)
+            .expect("Failed to spawn command");
+
+        let result = run_command_loop(&mut state, &timeouts).await;
+
+        assert!(result.is_ok(), "Command loop should exit without errors");
+        assert!(
+            state.exit_status.is_some(),
+            "Exit status should be set when process finishes naturally"
+        );
+    });
+}
+
+#[test]
+fn test_run_command_loop_exits_on_timeout() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("sleep");
+        cmd.arg("5");
+
+        let timeouts = TimeoutConfig {
+            minimum: Duration::from_secs(1),
+            maximum: Duration::from_secs(2), // Short timeout
+            activity: Duration::from_secs(10),
+            start_time: Instant::now(),
+            absolute_deadline: Instant::now() + Duration::from_secs(2),
+        };
+
+        let mut state = spawn_command_and_setup_state(&mut cmd, timeouts.absolute_deadline)
+            .expect("Failed to spawn command");
+
+        let result = run_command_loop(&mut state, &timeouts).await;
+
+        assert!(result.is_ok(), "Command loop should exit without errors");
+        assert!(
+            state.exit_status.is_none(),
+            "Exit status should be None when process is killed due to timeout"
+        );
+        assert!(state.timed_out, "State should indicate that the process timed out");
+    });
+}
+
 } // end tests mod
