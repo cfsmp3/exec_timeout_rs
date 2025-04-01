@@ -1,8 +1,6 @@
 // src/lib.rs
-#[cfg(unix)]
+
 use std::os::unix::process::CommandExt; // For pre_exec
-#[cfg(windows)]
-use std::os::windows::process::CommandExt; // For pre_exec
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -11,11 +9,8 @@ use tokio::process::{Child, Command as TokioCommand};
 use tokio::time::sleep_until;
 use tracing::{debug, instrument, warn};
 // --- Add nix imports ---
-#[cfg(unix)]
 use nix::sys::signal::{killpg, Signal};
-#[cfg(unix)]
 use nix::unistd::Pid;
-
 // --- End add ---
 
 // --- Structs and Enums ---
@@ -102,7 +97,6 @@ fn spawn_command_and_setup_state(
     command: &mut StdCommand,
     initial_deadline: Instant,
 ) -> Result<CommandExecutionState<impl AsyncRead + Unpin, impl AsyncRead + Unpin>, CommandError> {
-
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -268,13 +262,10 @@ async fn handle_timeout_event(
             "Killing process group due to timeout"
         );
         // Convert u32 PID to nix's Pid type (i32)
+        let pid = Pid::from_raw(pid_u32 as i32);
         // Send SIGKILL to the entire process group.
         // killpg takes the PID of any process in the group (usually the leader)
         // and signals the entire group associated with that process.
-
-        #[cfg(unix)]
-        let pid = Pid::from_raw(pid_u32 as i32);
-        #[cfg(unix)]
         match killpg(pid, Signal::SIGKILL) {
             Ok(()) => {
                 debug!(
@@ -287,81 +278,35 @@ async fn handle_timeout_event(
             }
             Err(e) => {
                 // ESRCH means the process group doesn't exist (likely all processes exited quickly)
-                return if e == nix::errno::Errno::ESRCH {
+                if e == nix::errno::Errno::ESRCH {
                     warn!(pid = pid_u32, error = %e, "Failed to kill process group (ESRCH - likely already exited). Checking child status.");
                     // Check if the *original* child process exited
                     match child.try_wait() {
                         Ok(Some(status)) => {
                             debug!(pid = pid_u32, status = %status, "Original child had already exited before kill signal processed");
-                            Ok(Some(status)) // Treat as natural exit
+                            return Ok(Some(status)); // Treat as natural exit
                         }
                         Ok(None) => {
                             debug!(pid = pid_u32, "Original child still running or uncollected after killpg failed (ESRCH).");
                             // Proceed as if timeout kill was attempted.
-                            Ok(None)
+                            return Ok(None);
                         }
                         Err(wait_err) => {
                             warn!(pid = pid_u32, error = %wait_err, "Error checking child status after failed killpg (ESRCH)");
-                            Err(CommandError::Wait(wait_err))
+                            return Err(CommandError::Wait(wait_err));
                         }
                     }
                 } else {
                     // Another error occurred during killpg (e.g., permissions EPERM)
                     warn!(pid = pid_u32, pgid = pid.as_raw(), error = %e, "Failed to send kill signal to process group.");
                     // Map nix::Error to std::io::Error for CommandError::Kill
-                    Err(CommandError::Kill(std::io::Error::new(
+                    return Err(CommandError::Kill(std::io::Error::new(
                         std::io::ErrorKind::Other,
                         format!("Failed to kill process group for PID {}: {}", pid_u32, e),
-                    )))
+                    )));
                 }
             }
         }
-        #[cfg(windows)]
-        {
-            use std::ffi::c_void;
-            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-            use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
-            use windows_sys::Win32::Foundation::BOOL;
-
-            unsafe {
-                // Open a handle to the process with termination privileges.
-                let handle: HANDLE = OpenProcess(PROCESS_TERMINATE, BOOL::from(false), pid_u32);
-                if handle == INVALID_HANDLE_VALUE {
-                    // Could not obtain a handle, perhaps the process already exited.
-                    let err = std::io::Error::last_os_error();
-                    warn!(pid = pid_u32, error = %err, "Failed to open process handle for termination (possibly already exited). Checking child status.");
-                    // Check if the original child process has already exited
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            debug!(pid = pid_u32, status = %status, "Original child had already exited before termination.");
-                            return Ok(Some(status));
-                        }
-                        Ok(None) => {
-                            debug!(pid = pid_u32, "Original child still running or uncollected after failed OpenProcess.");
-                            return Ok(None);
-                        }
-                        Err(wait_err) => {
-                            warn!(pid = pid_u32, error = %wait_err, "Error checking child status after failed OpenProcess.");
-                            return Err(CommandError::Wait(wait_err));
-                        }
-                    }
-                } else {
-                    // Attempt to terminate the process.
-                    if TerminateProcess(handle, 1).is_positive() {
-                        debug!(pid = pid_u32, "Process terminated successfully via TerminateProcess.");
-                        CloseHandle(handle);
-                        Ok(None)
-                    } else {
-                        let err = std::io::Error::last_os_error();
-                        warn!(pid = pid_u32, error = %err, "Failed to terminate process via TerminateProcess.");
-                        CloseHandle(handle);
-                        return Err(CommandError::Kill(err));
-                    }
-                }
-            }
-        }
-
     } else {
         // This case should be extremely unlikely if spawn succeeded.
         warn!(
@@ -548,7 +493,6 @@ pub async fn run_command_with_timeout(
     // Take ownership to modify, then pass the modified command to spawn_command_and_setup_state
     let mut std_cmd = std::mem::replace(&mut command, StdCommand::new("")); // Take ownership temporarily
     unsafe {
-        #[cfg(unix)]
         std_cmd.pre_exec(|| {
             // libc::setpgid(0, 0) makes the new process its own group leader.
             // Pass 0 for both pid and pgid to achieve this for the calling process.
@@ -559,15 +503,6 @@ pub async fn run_command_with_timeout(
                 Err(std::io::Error::last_os_error())
             }
         });
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NEW_PROCESS_GROUP makes the new process the root of a new process group.
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            std_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-
-
     }
     // Put the modified command back for spawning
     command = std_cmd;
@@ -586,14 +521,14 @@ pub async fn run_command_with_timeout(
         &mut state.stdout_read_buffer,
         "stdout",
     )
-        .await?;
+    .await?;
     drain_reader(
         &mut state.stderr_reader,
         &mut state.stderr_buffer,
         &mut state.stderr_read_buffer,
         "stderr",
     )
-        .await?;
+    .await?;
 
     // Post-loop processing: Final wait if killed and status not yet obtained
     let final_exit_status = finalize_exit_status(
@@ -601,7 +536,7 @@ pub async fn run_command_with_timeout(
         state.exit_status, // Use status potentially set in loop
         state.timed_out,
     )
-        .await?;
+    .await?;
 
     let end_time = Instant::now();
     let duration = end_time.duration_since(start_time);
@@ -629,10 +564,7 @@ pub async fn run_command_with_timeout(
 mod tests {
     use super::*;
     use libc;
-    #[cfg(unix)]
-    use std::os::unix::process::ExitStatusExt;
-    #[cfg(windows)]
-    use std::os::windows::process::ExitStatusExt;
+    use std::os::unix::process::ExitStatusExt; // For signal checking
     use tokio::runtime::Runtime;
     use tracing_subscriber::{fmt, EnvFilter}; // Make sure libc is in scope for SIGKILL constant
 
@@ -651,7 +583,7 @@ mod tests {
     fn run_async_test<F, Fut>(test_fn: F)
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output=()>,
+        Fut: std::future::Future<Output = ()>,
     {
         setup_tracing();
         let rt = Runtime::new().unwrap();
@@ -751,7 +683,6 @@ mod tests {
                 "Exit status should be Some after kill"
             );
             // SIGKILL is signal 9
-            #[cfg(unix)]
             assert_eq!(
                 result.exit_status.unwrap().signal(),
                 Some(libc::SIGKILL as i32),
@@ -769,7 +700,7 @@ mod tests {
             );
         });
     }
-    #[cfg(unix)]
+
     #[test]
     fn test_activity_timeout_kills_idle_command_after_min_timeout() {
         run_async_test(|| async {
@@ -792,7 +723,6 @@ mod tests {
                 "Exit status should be Some after kill"
             );
             // SIGKILL is signal 9
-            #[cfg(unix)]
             assert_eq!(
                 result.exit_status.unwrap().signal(),
                 Some(libc::SIGKILL as i32),
@@ -924,7 +854,7 @@ mod tests {
     fn test_min_timeout_greater_than_max_timeout() {
         run_async_test(|| async {
             let cmd = StdCommand::new("echo"); // removed mut
-            // cmd.arg("test"); // Don't need args
+                                               // cmd.arg("test"); // Don't need args
 
             let min_timeout = Duration::from_secs(2);
             let max_timeout = Duration::from_secs(1); // Invalid config
@@ -945,7 +875,7 @@ mod tests {
     fn test_zero_activity_timeout() {
         run_async_test(|| async {
             let cmd = StdCommand::new("echo"); // removed mut
-            // cmd.arg("test"); // Don't need args
+                                               // cmd.arg("test"); // Don't need args
 
             let min_timeout = Duration::from_millis(100);
             let max_timeout = Duration::from_secs(1);
@@ -988,7 +918,6 @@ mod tests {
         });
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_continuous_output_does_not_timeout() {
         run_async_test(|| async {
@@ -1019,7 +948,7 @@ mod tests {
                 "Duration should be > 2s"
             ); // 20 * 0.1s
             assert!(
-                result.duration < Duration::from_secs(5),
+                result.duration < Duration::from_secs(3),
                 "Duration should be < 3s"
             );
         });
@@ -1046,7 +975,6 @@ mod tests {
                 "Exit status should be Some after kill"
             );
             // SIGKILL is signal 9
-            #[cfg(unix)]
             assert_eq!(
                 result.exit_status.unwrap().signal(),
                 Some(libc::SIGKILL as i32),
