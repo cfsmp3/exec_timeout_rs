@@ -1,4 +1,4 @@
-name: Rust CI on Linux
+name: Rust CI on Windows
 
 on:
   push:
@@ -9,19 +9,21 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Ctarget-feature=+crt-static
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Cache Cargo registry and build artifacts
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            C:\Users\runneradmin\.cargo\registry
+            C:\Users\runneradmin\.cargo\git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
