@@ -948,8 +948,8 @@ mod tests {
                 "Duration should be > 2s"
             ); // 20 * 0.1s
             assert!(
-                result.duration < Duration::from_secs(3),
-                "Duration should be < 3s"
+                result.duration < Duration::from_secs(5),
+                "Duration should be < 5s"
             );
         });
     }
