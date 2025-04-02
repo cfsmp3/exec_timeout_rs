@@ -22,7 +22,6 @@ libc = "0.2" # For setpgid and signal constants
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] } # For logging setup
 tempfile = "3" # For creating temporary directories in examples/tests
 anyhow = "1.0" # For simple error handling in examples
-
 # Dependency on the library itself (needed for building examples within the workspace)
 # This line might not be strictly necessary if cargo automatically detects it,
 # but explicitly listing it can sometimes help.
