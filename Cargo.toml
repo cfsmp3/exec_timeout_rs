@@ -18,6 +18,10 @@ thiserror = "1.0"
 nix = { version = "0.29", features = ["signal", "process"] } # For killpg
 libc = "0.2" # For setpgid and signal constants
 
+
+futures = "0.3"
+
+
 # Dependencies also used by the example(s)
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] } # For logging setup
 tempfile = "3" # For creating temporary directories in examples/tests
@@ -40,3 +44,10 @@ name = "git_clone_kernel"
 path = "examples/git_clone_kernel.rs"
 # Example requires tokio runtime features if not enabled globally in [dependencies]
 # required-features = ["full"] # Uncomment if tokio features are restricted in [dependencies]
+
+# Declare the example binary target
+[[example]]
+name = "simultaneous_git_clone"
+path = "examples/simultaneous_git_clone.rs"
+# Example requires tokio runtime features if not enabled globally in [dependencies]
+# required-features = ["full"] # uncomment if tokio features are restricted in [dependencies]
