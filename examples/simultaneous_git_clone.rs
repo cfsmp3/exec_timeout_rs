@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use command_timeout::{run_command_with_timeout, CommandError, CommandOutput};
+use std::collections::HashMap;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,31 +62,51 @@ async fn main() -> Result<(), anyhow::Error> {
         );
     }
 
-    //Create a temp directories to clone into
-    let clone_futures = repos.iter().map(|(url, min, max, activity)| async {
-        let dir = Builder::new()
-            .prefix(&format!(
-                "clone_{}",
-                url.split('/').last().unwrap_or("repo")
-            ))
-            .tempdir()
-            .context("Failed to create temporary directory")?;
+    // Create a temp directories to clone into
+    let mut results_summary: HashMap<&str, Result<(), anyhow::Error>> = HashMap::new();
+    let clone_futures = repos.iter().map(|(url, min, max, activity)| {
+        let url_clone = *url; // Clone the URL for use in the async block
+        async move {
+            let dir = Builder::new()
+                .prefix(&format!(
+                    "clone_{}",
+                    url.split('/').last().unwrap_or("repo")
+                ))
+                .tempdir()
+                .context("Failed to create temporary directory");
 
-        clone_repository(url, dir.path(), *min, *max, *activity).await
+            let result = match dir {
+                Ok(dir) => clone_repository(url, dir.path(), *min, *max, *activity).await,
+                Err(e) => Err(e),
+            };
+            (url_clone, result)
+        }
     });
 
-    //join_all runs all 3 clones concurrently
+    // Run all clone operations concurrently
     let results = futures::future::join_all(clone_futures).await;
 
-    //log error if error
-    for result in results {
-        if let Err(e) = result {
-            error!("Clone operation failed: {:?}", e);
+    // Collect results into the summary
+    for (url, result) in results {
+        results_summary.insert(url, result);
+    }
+
+    // Log the summary of results
+    info!("Clone operations summary:");
+    for (url, result) in &results_summary {
+        match result {
+            Ok(_) => info!("SUCCESS: {}", url),
+            Err(e) => error!("FAILED: {} - {:?}", url, e),
         }
     }
 
-    //log success if success
-    info!("All clone operations completed.");
+    // Log overall status
+    let failed_count = results_summary.values().filter(|r| r.is_err()).count();
+    if failed_count > 0 {
+        error!("{} repositories failed to clone.", failed_count);
+    } else {
+        info!("All repositories cloned successfully!");
+    }
 
     Ok(())
 }
