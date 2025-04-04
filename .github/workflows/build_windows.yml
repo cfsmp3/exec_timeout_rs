@@ -40,3 +40,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+
+      - name: Build examples
+        run: |
+          for example in $(ls examples/*.rs); do
+            name=$(basename "$example" .rs)
+            echo "Building example: $name"
+            cargo build --example "$name" --verbose
+          done
+
