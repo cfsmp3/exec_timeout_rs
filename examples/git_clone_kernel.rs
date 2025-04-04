@@ -1,8 +1,6 @@
 // examples/git_clone_kernel.rs
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-#[cfg(windows)]
-use std::os::windows::process::ExitStatusExt;
 use command_timeout::{run_command_with_timeout, CommandError, CommandOutput};
 use std::path::PathBuf; // <<< Import PathBuf
 use std::process::{Command, ExitStatus};
@@ -127,10 +125,6 @@ fn handle_command_output(output: CommandOutput) {
             #[cfg(unix)]
             if let Some(signal) = status.signal() {
                 warn!("Terminated by Signal: {}", signal);
-            }
-            #[cfg(windows)]
-            if let Some(code) = status.code() {
-                warn!("Exit Code: {}", code);
             }
         }
     } else {

@@ -1,8 +1,6 @@
 // src/lib.rs
 #[cfg(unix)]
 use std::os::unix::process::CommandExt; // For pre_exec
-#[cfg(windows)]
-use std::os::windows::process::CommandExt; // For pre_exec
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -102,7 +100,6 @@ fn spawn_command_and_setup_state(
     command: &mut StdCommand,
     initial_deadline: Instant,
 ) -> Result<CommandExecutionState<impl AsyncRead + Unpin, impl AsyncRead + Unpin>, CommandError> {
-
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -318,7 +315,6 @@ async fn handle_timeout_event(
         }
         #[cfg(windows)]
         {
-            use std::ffi::c_void;
             use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
             use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
             use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
@@ -361,7 +357,6 @@ async fn handle_timeout_event(
                 }
             }
         }
-
     } else {
         // This case should be extremely unlikely if spawn succeeded.
         warn!(
@@ -547,8 +542,8 @@ pub async fn run_command_with_timeout(
     // This MUST be done before spawning the command.
     // Take ownership to modify, then pass the modified command to spawn_command_and_setup_state
     let mut std_cmd = std::mem::replace(&mut command, StdCommand::new("")); // Take ownership temporarily
+    #[cfg(unix)]
     unsafe {
-        #[cfg(unix)]
         std_cmd.pre_exec(|| {
             // libc::setpgid(0, 0) makes the new process its own group leader.
             // Pass 0 for both pid and pgid to achieve this for the calling process.
@@ -559,16 +554,16 @@ pub async fn run_command_with_timeout(
                 Err(std::io::Error::last_os_error())
             }
         });
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NEW_PROCESS_GROUP makes the new process the root of a new process group.
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            std_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
-
-
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP makes the new process the root of a new process group.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        std_cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+
+
     // Put the modified command back for spawning
     command = std_cmd;
 
@@ -628,11 +623,10 @@ pub async fn run_command_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use libc;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
-    #[cfg(windows)]
-    use std::os::windows::process::ExitStatusExt;
     use tokio::runtime::Runtime;
     use tracing_subscriber::{fmt, EnvFilter}; // Make sure libc is in scope for SIGKILL constant
 
