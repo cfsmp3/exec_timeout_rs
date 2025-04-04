@@ -43,9 +43,8 @@ jobs:
 
       - name: Build examples
         run: |
-          for example in $(ls examples/*.rs); do
-            name=$(basename "$example" .rs)
-            echo "Building example: $name"
-            cargo build --example "$name" --verbose
-          done
-
+          for %example in (examples\*.rs) do (
+            set name=%~nexample
+            echo Building example: %name%
+            cargo build --example %name% --verbose
+          )
