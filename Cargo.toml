@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] } # For
 tempfile = "3" # For creating temporary directories in examples/tests
 anyhow = "1.0" # For simple error handling in examples
 futures = "0.3" # For simulataneous_git_clone example
+windows-sys = { version = "0.59.0", features = ["Win32", "Win32_System", "Win32_System_Threading", "Win32_Foundation"] }
 # Dependency on the library itself (needed for building examples within the workspace)
 # This line might not be strictly necessary if cargo automatically detects it,
 # but explicitly listing it can sometimes help.
