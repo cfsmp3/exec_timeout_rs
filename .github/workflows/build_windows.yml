@@ -41,10 +41,12 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-      - name: Build examples
+      - name: Build examples (Windows)
+        shell: pwsh
         run: |
-          for %example in (examples\*.rs) do (
-            set name=%~nexample
-            echo Building example: %name%
-            cargo build --example %name% --verbose
-          )
+          Get-ChildItem examples\*.rs | ForEach-Object {
+            $name = $_.BaseName
+            Write-Host "Building example: $name"
+            cargo build --example $name --verbose
+          }
+
