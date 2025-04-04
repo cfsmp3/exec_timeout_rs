@@ -407,29 +407,35 @@ async fn run_command_loop(
                 state.stderr_read_buffer.clear(); // Clear after processing
             }
 
-            // 4. Check for timeout
-            _ = &mut deadline_sleep, if can_check_timeout => {
-                match handle_timeout_event(
-                    &mut state.child,
-                    state.current_deadline,
-                    timeouts
-                ).await {
-                    Ok(Some(status)) => { // Process exited just before kill
-                        debug!("Timeout detected but process already exited.");
-                        state.exit_status = Some(status);
-                        state.timed_out = false; // Not actually killed by us
-                    }
-                    Ok(None) => { // Timeout occurred, kill attempted/succeeded.
-                        state.timed_out = true;
-                    }
-                    Err(e) => { // Error during kill or subsequent check
-                        return Err(e);
-                    }
-                }
-                 break; // Exit loop after timeout event
-            }
+            
+// 4. Check for timeout
+_ = &mut deadline_sleep, if can_check_timeout => {
+    let now = Instant::now();
+    let triggered_deadline = if now >= timeouts.absolute_deadline {
+        debug!("Absolute deadline exceeded. Triggering timeout.");
+        timeouts.absolute_deadline
+    } else {
+        debug!("Activity timeout likely exceeded. Triggering timeout.");
+        state.current_deadline
+    };
+
+    match handle_timeout_event(&mut state.child, triggered_deadline, timeouts).await {
+        Ok(Some(status)) => {
+            debug!("Timeout detected but process already exited.");
+            state.exit_status = Some(status);
+            state.timed_out = false; // Not actually killed by us
         }
-    } // end loop
+        Ok(None) => {
+            state.timed_out = true; // Timeout occurred, kill attempted/succeeded.
+        }
+        Err(e) => {
+            return Err(e); // Error during kill or subsequent check
+        }
+    }
+    break; // Exit loop after timeout event
+}
+}
+} // end loop
 
     Ok(())
 }
@@ -1124,5 +1130,89 @@ fn test_run_command_loop_exits_on_timeout() {
         assert!(state.timed_out, "State should indicate that the process timed out");
     });
 }
+
+
+#[test]
+fn test_absolute_deadline_kills_infinite_loop_command() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("sh");
+        cmd.arg("-c").arg("while true; do :; done"); // Infinite loop
+
+        let min_timeout = Duration::from_secs(1);
+        let max_timeout = Duration::from_secs(2); // Absolute deadline of 2 seconds
+        let activity_timeout = Duration::from_secs(10); // Irrelevant since absolute deadline is shorter
+
+        let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
+            .await
+            .expect("Command failed unexpectedly");
+
+        assert!(result.stdout.is_empty(), "Stdout should be empty");
+        assert!(result.stderr.is_empty(), "Stderr should be empty");
+        assert!(
+            result.exit_status.is_some(),
+            "Exit status should be Some after kill"
+        );
+        // SIGKILL is signal 9
+        assert_eq!(
+            result.exit_status.unwrap().signal(),
+            Some(libc::SIGKILL as i32),
+            "Should be killed by SIGKILL"
+        );
+        assert!(result.timed_out, "Should have timed out");
+        assert!(
+            result.duration >= max_timeout,
+            "Duration should be >= max_timeout"
+        );
+        assert!(
+            result.duration < max_timeout + Duration::from_millis(750),
+            "Duration should allow a small buffer for process group kill and reaping"
+        );
+    });
+}
+
+#[test]
+fn test_infinite_output_command() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("yes");
+        cmd.arg("infinite");
+
+        let min_timeout = Duration::from_secs(1);
+        let max_timeout = Duration::from_secs(2); // Absolute deadline of 2 seconds
+        let activity_timeout = Duration::from_secs(1); // Activity timeout of 1 second
+
+        let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
+            .await
+            .expect("Command failed unexpectedly");
+
+        assert!(
+            !result.stdout.is_empty(),
+            "Stdout should not be empty for infinite output"
+        );
+        assert!(
+            result.stderr.is_empty(),
+            "Stderr should be empty for the `yes` command"
+        );
+        assert!(
+            result.exit_status.is_some(),
+            "Exit status should be Some after timeout"
+        );
+        // SIGKILL is signal 9
+        assert_eq!(
+            result.exit_status.unwrap().signal(),
+            Some(libc::SIGKILL as i32),
+            "Should be killed by SIGKILL"
+        );
+        assert!(result.timed_out, "Should have timed out");
+        assert!(
+            result.duration >= max_timeout,
+            "Duration should be >= max_timeout"
+        );
+        assert!(
+            result.duration < max_timeout + Duration::from_millis(750),
+            "Duration should allow a small buffer for process group kill and reaping"
+        );
+    });
+}
+
 
 } // end tests mod
