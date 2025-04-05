@@ -1,4 +1,4 @@
-name: Rust CI on Mac
+name: Rust CI on Linux
 
 on:
   push:
@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
