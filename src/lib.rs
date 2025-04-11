@@ -1207,9 +1207,12 @@ fn test_infinite_output_command() {
             result.duration >= max_timeout,
             "Duration should be >= max_timeout"
         );
+        let buffer = Duration::from_millis(750);
+        let diff = result.duration - max_timeout;
         assert!(
-            result.duration < max_timeout + Duration::from_millis(750),
-            "Duration should allow a small buffer for process group kill and reaping"
+            result.duration < max_timeout + buffer,
+            "Duration should allow a small buffer for process group kill and reaping, duration = {:?}, max_timeout = {:?}, buffer was {:?}, difference: {:?}",
+            result.duration, max_timeout, buffer, diff
         );
     });
 }
