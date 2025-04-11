@@ -40,20 +40,31 @@ The primary goal is to allow commands to run as long as they are actively making
 
 ## Installation
 
-Add this to your `Cargo.toml`:
+Just run 
+```shell
+$ git clone https://github.com/cfsmp3/exec_timeout_rs
+$ cd exec_timeout_rs
+$ cargo install --path . --locked
+```
+## Usage
 
+```shell
+$ command_timeout -c "curl https://www.google.com/" -f  "/path/to/config.toml"
+```
+OR
+```shell
+$ command_timeout 
+$ Enter your Command - curl https://www.google.com/
+$ Enter your config location - /path/to/config.toml
+```
+### Example of config.toml
 ```toml
-[dependencies]
-command-timeout = "0.1.0" # Replace with the desired version from crates.io
-# Required dependencies if you don't already have them
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-thiserror = "1.0"
-nix = { version = "0.29", features = ["signal", "process"] } # Check latest version
-libc = "0.2"
+minimum_timeout_ms = 500
+maximum_timeout_ms = 10000
+activity_timeout_ms = 2000
 ```
 
-## Usage
+## Custom Usage
 
 The main entry point is the run_command_with_timeout async function.
 
