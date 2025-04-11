@@ -954,10 +954,16 @@ mod tests {
                 result.duration > Duration::from_secs(2),
                 "Duration should be > 2s"
             ); // 20 * 0.1s
+            #[cfg(not(target_os = "macos"))]
             assert!(
                 result.duration < Duration::from_secs(3),
                 "Duration should be < 3s"
             );
+            #[cfg(target_os = "macos")]
+            assert!(
+                result.duration < Duration::from_secs(4),
+                "Duration should be < 4s"
+            ); // macOS has longer sleep resolution
         });
     }
 
