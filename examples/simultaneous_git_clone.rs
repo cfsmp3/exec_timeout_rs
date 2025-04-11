@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use command_timeout::{run_command_with_timeout, CommandError, CommandOutput};
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -190,6 +191,7 @@ fn handle_command_output(output: CommandOutput, repo_url: &str, target_path: &Pa
                 warn!("Exit Code: {}", code);
             }
             // signal() is now available because ExitStatusExt is in scope
+            #[cfg(unix)]
             if let Some(signal) = status.signal() {
                 warn!("Terminated by Signal: {}", signal);
             }

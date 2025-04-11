@@ -1,7 +1,7 @@
 // examples/git_clone_kernel.rs
-
-use command_timeout::{run_command_with_timeout, CommandError, CommandOutput};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+use command_timeout::{run_command_with_timeout, CommandError, CommandOutput};
 use std::path::PathBuf; // <<< Import PathBuf
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
@@ -34,11 +34,11 @@ async fn main() -> Result<(), anyhow::Error> {
     let min_timeout = Duration::from_secs(10);
     let max_timeout = Duration::from_secs(60 * 60 * 24 * 7); // 1 week (effectively infinite)
     let activity_timeout = Duration::from_secs(60 * 5); // 5 minutes
-                                                        // -----------------------------
+    // -----------------------------
 
     // Create a temporary directory builder
     let temp_dir_builder = Builder::new().prefix("kernel_clone_persistent").tempdir()?; // Use a different prefix
-                                                                                        // --- CHANGE: Keep the path instead of the TempDir object ---
+    // --- CHANGE: Keep the path instead of the TempDir object ---
     let clone_target_path_buf: PathBuf = temp_dir_builder.into_path();
     // --- END CHANGE ---
     let clone_target_path_str = clone_target_path_buf.to_str().unwrap_or("."); // Use "." as fallback if path invalid unicode
@@ -122,6 +122,7 @@ fn handle_command_output(output: CommandOutput) {
                 warn!("Exit Code: {}", code);
             }
             // signal() is now available because ExitStatusExt is in scope
+            #[cfg(unix)]
             if let Some(signal) = status.signal() {
                 warn!("Terminated by Signal: {}", signal);
             }
