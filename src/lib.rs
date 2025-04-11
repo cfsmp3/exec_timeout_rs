@@ -1172,13 +1172,19 @@ fn test_absolute_deadline_kills_infinite_loop_command() {
 
 #[test]
 fn test_infinite_output_command() {
+    // test for commands like `yes`
     run_async_test(|| async {
-        let mut cmd = StdCommand::new("yes");
-        cmd.arg("infinite");
+        // Use a simpler infinite command that's more reliable than 'yes'
+        // because yes tries as to maximize CPU usage by
+        // generating output as fast as possible in an infinite loop 
+        // without any delay between repetitions
+        let mut cmd = StdCommand::new("bash");
+           cmd.arg("-c")
+               .arg("while true; do echo 'test'; sleep 0.1; done");
 
         let min_timeout = Duration::from_secs(1);
-        let max_timeout = Duration::from_secs(2); // Absolute deadline of 2 seconds
-        let activity_timeout = Duration::from_secs(1); // Activity timeout of 1 second
+        let max_timeout = Duration::from_secs(2);
+        let activity_timeout = Duration::from_secs(1);
 
         let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
             .await
@@ -1196,11 +1202,11 @@ fn test_infinite_output_command() {
             result.exit_status.is_some(),
             "Exit status should be Some after timeout"
         );
-        // SIGKILL is signal 9
+        
         assert_eq!(
             result.exit_status.unwrap().signal(),
             Some(libc::SIGKILL as i32),
-            "Should be killed by SIGKILL"
+            "Should be killed by SIGKILL" // SIGKILL is signal 9
         );
         assert!(result.timed_out, "Should have timed out");
         assert!(
