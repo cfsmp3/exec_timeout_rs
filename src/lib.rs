@@ -456,29 +456,35 @@ async fn run_command_loop(
                 state.stderr_read_buffer.clear(); // Clear after processing
             }
 
-            // 4. Check for timeout
-            _ = &mut deadline_sleep, if can_check_timeout => {
-                match handle_timeout_event(
-                    &mut state.child,
-                    state.current_deadline,
-                    timeouts
-                ).await {
-                    Ok(Some(status)) => { // Process exited just before kill
-                        debug!("Timeout detected but process already exited.");
-                        state.exit_status = Some(status);
-                        state.timed_out = false; // Not actually killed by us
-                    }
-                    Ok(None) => { // Timeout occurred, kill attempted/succeeded.
-                        state.timed_out = true;
-                    }
-                    Err(e) => { // Error during kill or subsequent check
-                        return Err(e);
-                    }
-                }
-                 break; // Exit loop after timeout event
-            }
+            
+// 4. Check for timeout
+_ = &mut deadline_sleep, if can_check_timeout => {
+    let now = Instant::now();
+    let triggered_deadline = if now >= timeouts.absolute_deadline {
+        debug!("Absolute deadline exceeded. Triggering timeout.");
+        timeouts.absolute_deadline
+    } else {
+        debug!("Activity timeout likely exceeded. Triggering timeout.");
+        state.current_deadline
+    };
+
+    match handle_timeout_event(&mut state.child, triggered_deadline, timeouts).await {
+        Ok(Some(status)) => {
+            debug!("Timeout detected but process already exited.");
+            state.exit_status = Some(status);
+            state.timed_out = false; // Not actually killed by us
         }
-    } // end loop
+        Ok(None) => {
+            state.timed_out = true; // Timeout occurred, kill attempted/succeeded.
+        }
+        Err(e) => {
+            return Err(e); // Error during kill or subsequent check
+        }
+    }
+    break; // Exit loop after timeout event
+}
+}
+} // end loop
 
     Ok(())
 }
@@ -1059,4 +1065,229 @@ mod tests {
             );
         });
     }
+
+
+    //  ----- tests for calculate_new_deadline -----
+    #[test]
+fn test_calculate_new_deadline_absolute_deadline_passed() {
+    let absolute_deadline = Instant::now() - Duration::from_secs(1); // Already passed
+    let activity_timeout = Duration::from_secs(5);
+
+    let new_deadline = calculate_new_deadline(absolute_deadline, activity_timeout);
+
+    assert_eq!(
+        new_deadline, absolute_deadline,
+        "New deadline should be the absolute deadline when it has already passed"
+    );
+}
+
+#[test]
+fn test_calculate_new_deadline_activity_timeout_before_absolute_deadline() {
+    let absolute_deadline = Instant::now() + Duration::from_secs(10);
+    let activity_timeout = Duration::from_secs(5);
+
+    let new_deadline = calculate_new_deadline(absolute_deadline, activity_timeout);
+
+    assert!(
+        new_deadline <= absolute_deadline,
+        "New deadline should not exceed the absolute deadline"
+    );
+    assert!(
+        new_deadline > Instant::now(),
+        "New deadline should be in the future"
+    );
+}
+    // ----- tests for handle_stream_activity -----
+    #[test]
+fn test_handle_stream_activity_updates_deadline() {
+    let mut current_deadline = Instant::now() + Duration::from_secs(5);
+    let timeouts = TimeoutConfig {
+        minimum: Duration::from_secs(1),
+        maximum: Duration::from_secs(10),
+        activity: Duration::from_secs(3),
+        start_time: Instant::now(),
+        absolute_deadline: Instant::now() + Duration::from_secs(10),
+    };
+
+    handle_stream_activity(10, "stdout", &mut current_deadline, &timeouts);
+
+    assert!(
+        current_deadline > Instant::now(),
+        "Current deadline should be updated to a future time"
+    );
+    assert!(
+        current_deadline <= timeouts.absolute_deadline,
+        "Current deadline should not exceed the absolute deadline"
+    );
+}
+
+#[test]
+fn test_handle_stream_activity_no_update_at_absolute_limit() {
+    let absolute_deadline = Instant::now() + Duration::from_secs(5);
+    let mut current_deadline = absolute_deadline; // Already at the absolute limit
+    let timeouts = TimeoutConfig {
+        minimum: Duration::from_secs(1),
+        maximum: Duration::from_secs(10),
+        activity: Duration::from_secs(3),
+        start_time: Instant::now(),
+        absolute_deadline,
+    };
+
+    handle_stream_activity(10, "stderr", &mut current_deadline, &timeouts);
+
+    assert_eq!(
+        current_deadline, absolute_deadline,
+        "Current deadline should remain unchanged when at the absolute limit"
+    );
+}
+
+    // ----- tests for run_command_loop -----
+#[test]
+fn test_run_command_loop_exits_on_process_finish() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("echo");
+        cmd.arg("Test");
+
+        let timeouts = TimeoutConfig {
+            minimum: Duration::from_secs(1),
+            maximum: Duration::from_secs(5),
+            activity: Duration::from_secs(2),
+            start_time: Instant::now(),
+            absolute_deadline: Instant::now() + Duration::from_secs(5),
+        };
+
+        let mut state = spawn_command_and_setup_state(&mut cmd, timeouts.absolute_deadline)
+            .expect("Failed to spawn command");
+
+        let result = run_command_loop(&mut state, &timeouts).await;
+
+        assert!(result.is_ok(), "Command loop should exit without errors");
+        assert!(
+            state.exit_status.is_some(),
+            "Exit status should be set when process finishes naturally"
+        );
+    });
+}
+
+#[test]
+fn test_run_command_loop_exits_on_timeout() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("sleep");
+        cmd.arg("5");
+
+        let timeouts = TimeoutConfig {
+            minimum: Duration::from_secs(1),
+            maximum: Duration::from_secs(2), // Short timeout
+            activity: Duration::from_secs(10),
+            start_time: Instant::now(),
+            absolute_deadline: Instant::now() + Duration::from_secs(2),
+        };
+
+        let mut state = spawn_command_and_setup_state(&mut cmd, timeouts.absolute_deadline)
+            .expect("Failed to spawn command");
+
+        let result = run_command_loop(&mut state, &timeouts).await;
+
+        assert!(result.is_ok(), "Command loop should exit without errors");
+        assert!(
+            state.exit_status.is_none(),
+            "Exit status should be None when process is killed due to timeout"
+        );
+        assert!(state.timed_out, "State should indicate that the process timed out");
+    });
+}
+
+
+#[test]
+fn test_absolute_deadline_kills_infinite_loop_command() {
+    run_async_test(|| async {
+        let mut cmd = StdCommand::new("sh");
+        cmd.arg("-c").arg("while true; do :; done"); // Infinite loop
+
+        let min_timeout = Duration::from_secs(1);
+        let max_timeout = Duration::from_secs(2); // Absolute deadline of 2 seconds
+        let activity_timeout = Duration::from_secs(10); // Irrelevant since absolute deadline is shorter
+
+        let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
+            .await
+            .expect("Command failed unexpectedly");
+
+        assert!(result.stdout.is_empty(), "Stdout should be empty");
+        assert!(result.stderr.is_empty(), "Stderr should be empty");
+        assert!(
+            result.exit_status.is_some(),
+            "Exit status should be Some after kill"
+        );
+        // SIGKILL is signal 9
+        assert_eq!(
+            result.exit_status.unwrap().signal(),
+            Some(libc::SIGKILL as i32),
+            "Should be killed by SIGKILL"
+        );
+        assert!(result.timed_out, "Should have timed out");
+        assert!(
+            result.duration >= max_timeout,
+            "Duration should be >= max_timeout"
+        );
+        assert!(
+            result.duration < max_timeout + Duration::from_millis(750),
+            "Duration should allow a small buffer for process group kill and reaping"
+        );
+    });
+}
+
+#[test]
+fn test_infinite_output_command() {
+    // test for commands like `yes`
+    run_async_test(|| async {
+        // Use a simpler infinite command that's more reliable than 'yes'
+        // because yes tries as to maximize CPU usage by
+        // generating output as fast as possible in an infinite loop 
+        // without any delay between repetitions
+        let mut cmd = StdCommand::new("bash");
+           cmd.arg("-c")
+               .arg("while true; do echo 'test'; sleep 0.1; done");
+
+        let min_timeout = Duration::from_secs(1);
+        let max_timeout = Duration::from_secs(2);
+        let activity_timeout = Duration::from_secs(1);
+
+        let result = run_command_with_timeout(cmd, min_timeout, max_timeout, activity_timeout)
+            .await
+            .expect("Command failed unexpectedly");
+
+        assert!(
+            !result.stdout.is_empty(),
+            "Stdout should not be empty for infinite output"
+        );
+        assert!(
+            result.stderr.is_empty(),
+            "Stderr should be empty for the `yes` command"
+        );
+        assert!(
+            result.exit_status.is_some(),
+            "Exit status should be Some after timeout"
+        );
+        
+        assert_eq!(
+            result.exit_status.unwrap().signal(),
+            Some(libc::SIGKILL as i32),
+            "Should be killed by SIGKILL" // SIGKILL is signal 9
+        );
+        assert!(result.timed_out, "Should have timed out");
+        assert!(
+            result.duration >= max_timeout,
+            "Duration should be >= max_timeout"
+        );
+        let buffer = Duration::from_millis(750);
+        let diff = result.duration - max_timeout;
+        assert!(
+            result.duration < max_timeout + buffer,
+            "Duration should allow a small buffer for process group kill and reaping, duration = {:?}, max_timeout = {:?}, buffer was {:?}, difference: {:?}",
+            result.duration, max_timeout, buffer, diff
+        );
+    });
+}
+
+
 } // end tests mod
