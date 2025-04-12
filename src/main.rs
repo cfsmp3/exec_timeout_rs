@@ -72,8 +72,6 @@ fn prompt_for_input(prompt: &str) -> Result<String, Box<dyn std::error::Error>> 
 #[tokio::main]
 async fn main() {
     setup_tracing();
-    info!("Starting CLI");
-
     let args = Args::parse();
 
     let command_str = if let Some(cmd) = args.command {
