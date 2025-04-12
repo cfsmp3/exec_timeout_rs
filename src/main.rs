@@ -5,6 +5,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use std::time::Duration;
+use tracing::{debug, error, info};
+use tracing_subscriber::{fmt, EnvFilter};
 
 use command_timeout::{run_command_with_timeout};
 
@@ -27,7 +29,6 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-/// The configuration structure loaded from a TOML file.
 #[derive(Deserialize, Debug)]
 struct Config {
     minimum_timeout_ms: u64,
@@ -35,7 +36,6 @@ struct Config {
     activity_timeout_ms: u64,
 }
 
-/// Reads and parses configuration from a TOML file.
 fn read_config(path: &PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
     let cfg: Config = toml::from_str(&content)?;
@@ -49,10 +49,17 @@ fn split_command(command_str: &str) -> (String, Vec<String>) {
     (executable, args)
 }
 
-fn init_logging(level: &str) {
-    std::env::set_var("RUST_LOG", level);
-    let _ = env_logger::builder().is_test(true).try_init();
+fn setup_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    fmt()
+        .with_env_filter(filter)
+        .without_time()
+        .with_level(false)
+        .with_target(false)
+        .init();
 }
+
+
 
 fn prompt_for_input(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
     print!("{}", prompt);
@@ -64,10 +71,10 @@ fn prompt_for_input(prompt: &str) -> Result<String, Box<dyn std::error::Error>> 
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    setup_tracing();
+    info!("Starting CLI");
 
-    init_logging("info");
-    log::info!("Starting CLI");
+    let args = Args::parse();
 
     let command_str = if let Some(cmd) = args.command {
         cmd
@@ -75,7 +82,7 @@ async fn main() {
         match prompt_for_input("Enter your Command - ") {
             Ok(cmd) if !cmd.is_empty() => cmd,
             _ => {
-                eprintln!("No command provided; exiting.");
+                error!("No command provided; exiting.");
                 std::process::exit(1);
             }
         }
@@ -87,7 +94,7 @@ async fn main() {
         match prompt_for_input("Enter your config location - ") {
             Ok(p) if !p.is_empty() => PathBuf::from(p),
             _ => {
-                eprintln!("No configuration file provided; exiting.");
+                error!("No configuration file provided; exiting.");
                 std::process::exit(1);
             }
         }
@@ -96,18 +103,18 @@ async fn main() {
     let config = match read_config(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("Error reading config file: {}", e);
+            error!("Error reading config file: {}", e);
             std::process::exit(1);
         }
     };
-    log::debug!("Loaded config: {:#?}", config);
+    debug!("Loaded config: {:#?}", config);
 
     let (executable, args_vec) = split_command(&command_str);
     if executable.is_empty() {
-        eprintln!("Empty command provided; exiting.");
+        error!("Empty command provided; exiting.");
         std::process::exit(1);
     }
-    log::info!("Command to run: {} with args {:?}", executable, args_vec);
+    info!("Command to run: {} with args {:?}", executable, args_vec);
 
     let mut command = StdCommand::new(executable);
     command.args(args_vec);
@@ -116,27 +123,27 @@ async fn main() {
     let maximum_timeout = Duration::from_millis(config.maximum_timeout_ms);
     let activity_timeout = Duration::from_millis(config.activity_timeout_ms);
 
-    println!("Running command with timeouts:");
-    println!("  Minimum Timeout: {:?}", minimum_timeout);
-    println!("  Maximum Timeout: {:?}", maximum_timeout);
-    println!("  Activity Timeout: {:?}", activity_timeout);
+    info!("Running command with timeouts:");
+    info!("  Minimum Timeout: {:?}", minimum_timeout);
+    info!("  Maximum Timeout: {:?}", maximum_timeout);
+    info!("  Activity Timeout: {:?}", activity_timeout);
 
     match run_command_with_timeout(command, minimum_timeout, maximum_timeout, activity_timeout).await {
         Ok(output) => {
-            println!("\n--- Command Output ---");
-            println!("Timed Out: {}", output.timed_out);
-            println!("Duration: {:?}", output.duration);
+            info!("--- Command Output ---");
+            info!("Timed Out: {}", output.timed_out);
+            info!("Duration: {:?}", output.duration);
             if let Some(status) = output.exit_status {
-                println!("Exit Status: {}", status);
-                println!("Exit Code: {:?}", status.code());
+                info!("Exit Status: {}", status);
+                info!("Exit Code: {:?}", status.code());
             } else {
-                println!("Exit Status: None (process may have been killed)");
+                info!("Exit Status: None (process may have been killed)");
             }
-            println!("Stdout:\n{}", String::from_utf8_lossy(&output.stdout));
-            println!("Stderr:\n{}", String::from_utf8_lossy(&output.stderr));
+            info!("Stdout:\n{}", String::from_utf8_lossy(&output.stdout));
+            info!("Stderr:\n{}", String::from_utf8_lossy(&output.stderr));
         }
         Err(e) => {
-            eprintln!("Error running command: {:?}", e);
+            error!("Error running command: {:?}", e);
             std::process::exit(1);
         }
     }
